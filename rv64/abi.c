@@ -143,20 +143,20 @@ typclass(Class *c, Typ *t, int fpabi, int *gp, int *fp)
 	if (t->align > 4)
 		err("alignments larger than 16 are not supported");
 
-	if (t->isdark || t->size > 16 || t->size == 0) {
+	if (t->isdark || t->size > 2*regsize || t->size == 0) {
 		/* large structs are replaced by a
 		 * pointer to some caller-allocated
 		 * memory
 		 */
 		c->class |= Cptr;
-		*c->cls = Kl;
+		*c->cls = regcls;
 		*c->off = 0;
 		c->ngp = 1;
 	}
 	else if (!fpabi || fpstruct(t, 0, c) <= 0) {
-		for (n=0; 8*n<t->size; n++) {
-			c->cls[n] = Kl;
-			c->off[n] = 8*n;
+		for (n=0; regsize*n<t->size; n++) {
+			c->cls[n] = regcls;
+			c->off[n] = regsize*n;
 		}
 		c->nfp = 0;
 		c->ngp = n;
@@ -184,9 +184,9 @@ sttmps(Ref tmp[], int ntmp, Class *c, Ref mem, Fn *fn)
 	assert(ntmp <= 2);
 	for (i=0; i<ntmp; i++) {
 		tmp[i] = newtmp("abi", c->cls[i], fn);
-		r = newtmp("abi", Kl, fn);
+		r = newtmp("abi", regcls, fn);
 		emit(st[c->cls[i]], 0, R, tmp[i], r);
-		emit(Oadd, Kl, r, mem, getcon(c->off[i], fn));
+		emit(Oadd, regcls, r, mem, getcon(c->off[i], fn));
 	}
 }
 
@@ -197,9 +197,9 @@ ldregs(Class *c, Ref mem, Fn *fn)
 	Ref r;
 
 	for (i=0; i<c->nreg; i++) {
-		r = newtmp("abi", Kl, fn);
+		r = newtmp("abi", regcls, fn);
 		emit(Oload, c->cls[i], TMP(c->reg[i]), r, R);
-		emit(Oadd, Kl, r, mem, getcon(c->off[i], fn));
+		emit(Oadd, regcls, r, mem, getcon(c->off[i], fn));
 	}
 }
 
@@ -310,7 +310,7 @@ argsclass(Ins *i0, Ins *i1, Class *carg, int retptr)
 		case Opare:
 		case Oarge:
 			*c->reg = T5;
-			*c->cls = Kl;
+			*c->cls = regcls;
 			envc = 1;
 			break;
 		}
@@ -330,7 +330,7 @@ stkblob(Ref r, Typ *t, Fn *fn, Insl **ilp)
 	if (al < 0)
 		al = 0;
 	sz = (t->size + 7) & ~7;
-	il->i = (Ins){Oalloc+al, Kl, r, {getcon(sz, fn)}};
+	il->i = (Ins){Oalloc+al, regcls, r, {getcon(sz, fn)}};
 	il->link = *ilp;
 	*ilp = il;
 }
@@ -356,14 +356,14 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 		if (i->op == Oargv)
 			continue;
 		if (c->class & Cptr) {
-			i->arg[0] = newtmp("abi", Kl, fn);
+			i->arg[0] = newtmp("abi", regcls, fn);
 			stkblob(i->arg[0], c->type, fn, ilp);
 			i->op = Oarg;
 		}
 		if (c->class & Cstk1)
-			stk += 8;
+			stk += regsize;
 		if (c->class & Cstk2)
-			stk += 8;
+			stk += regsize;
 	}
 	stk += stk & 15;
 	if (stk)
@@ -397,7 +397,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 
 	if (cr.class & Cptr)
 		/* struct return argument */
-		emit(Ocopy, Kl, TMP(A0), i1->to, R);
+		emit(Ocopy, regcls, TMP(A0), i1->to, R);
 
 	/* move arguments into registers */
 	for (i=i0, c=ca; i<i1; i++, c++) {
@@ -431,14 +431,14 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 
 	/* populate the stack */
 	off = 0;
-	r = newtmp("abi", Kl, fn);
+	r = newtmp("abi", regcls, fn);
 	for (i=i0, c=ca; i<i1; i++, c++) {
 		if (i->op == Oargv || !(c->class & Cstk))
 			continue;
 		if (i->op == Oarg) {
-			r1 = newtmp("abi", Kl, fn);
+			r1 = newtmp("abi", regcls, fn);
 			emit(Ostorew+i->cls, Kw, R, i->arg[0], r1);
-			if (i->cls == Kw) {
+			if (regcls == Kl && i->cls == Kw) {
 				/* TODO: we only need this sign
 				 * extension for l temps passed
 				 * as w arguments
@@ -448,27 +448,27 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 				curi->arg[0] = newtmp("abi", Kl, fn);
 				emit(Oextsw, Kl, curi->arg[0], i->arg[0], R);
 			}
-			emit(Oadd, Kl, r1, r, getcon(off, fn));
-			off += 8;
+			emit(Oadd, regcls, r1, r, getcon(off, fn));
+			off += regsize;
 		}
 		if (i->op == Oargc) {
 			if (c->class & Cstk1) {
-				r1 = newtmp("abi", Kl, fn);
-				r2 = newtmp("abi", Kl, fn);
-				emit(Ostorel, 0, R, r2, r1);
-				emit(Oadd, Kl, r1, r, getcon(off, fn));
-				emit(Oload, Kl, r2, i->arg[1], R);
-				off += 8;
+				r1 = newtmp("abi", regcls, fn);
+				r2 = newtmp("abi", regcls, fn);
+				emit(Ostorew, 0, R, r2, r1);
+				emit(Oadd, regcls, r1, r, getcon(off, fn));
+				emit(Oload, regcls, r2, i->arg[1], R);
+				off += regsize;
 			}
 			if (c->class & Cstk2) {
-				r1 = newtmp("abi", Kl, fn);
-				r2 = newtmp("abi", Kl, fn);
-				emit(Ostorel, 0, R, r2, r1);
-				emit(Oadd, Kl, r1, r, getcon(off, fn));
-				r1 = newtmp("abi", Kl, fn);
-				emit(Oload, Kl, r2, r1, R);
-				emit(Oadd, Kl, r1, i->arg[1], getcon(8, fn));
-				off += 8;
+				r1 = newtmp("abi", regcls, fn);
+				r2 = newtmp("abi", regcls, fn);
+				emit(Ostorew, 0, R, r2, r1);
+				emit(Oadd, regcls, r1, r, getcon(off, fn));
+				r1 = newtmp("abi", regcls, fn);
+				emit(Oload, regcls, r2, r1, R);
+				emit(Oadd, regcls, r1, i->arg[1], getcon(4, fn));
+				off += regsize;
 			}
 		}
 	}
@@ -491,8 +491,8 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
 	if (fn->retty >= 0) {
 		typclass(&cr, &typ[fn->retty], 1, gpreg, fpreg);
 		if (cr.class & Cptr) {
-			fn->retr = newtmp("abi", Kl, fn);
-			emit(Ocopy, Kl, fn->retr, TMP(A0), R);
+			fn->retr = newtmp("abi", regcls, fn);
+			emit(Ocopy, regcls, fn->retr, TMP(A0), R);
 		}
 	}
 
@@ -514,8 +514,8 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
 		if (c->nreg != 0) {
 			nt = c->nreg;
 			if (c->class & Cstk2) {
-				c->cls[1] = Kl;
-				c->off[1] = 8;
+				c->cls[1] = regcls;
+				c->off[1] = regsize;
 				assert(nt == 1);
 				nt = 2;
 			}
@@ -541,7 +541,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
 				emit(Ocopy, c->cls[j], *t++, r, R);
 			}
 			if (c->class & Cstk2) {
-				emit(Oload, Kl, *t, SLOT(-s), R);
+				emit(Oload, regcls, *t, SLOT(-s), R);
 				t++, s++;
 			}
 		} else if (c->class & Cstk1) {
@@ -563,12 +563,12 @@ selvaarg(Fn *fn, Ins *i)
 {
 	Ref loc, newloc;
 
-	loc = newtmp("abi", Kl, fn);
-	newloc = newtmp("abi", Kl, fn);
-	emit(Ostorel, Kw, R, newloc, i->arg[0]);
-	emit(Oadd, Kl, newloc, loc, getcon(8, fn));
+	loc = newtmp("abi", regcls, fn);
+	newloc = newtmp("abi", regcls, fn);
+	emit(Ostorew + regcls, Kw, R, newloc, i->arg[0]);
+	emit(Oadd, regcls, newloc, loc, getcon(regsize, fn));
 	emit(Oload, i->cls, i->to, loc, R);
-	emit(Oload, Kl, loc, i->arg[0], R);
+	emit(Oload, regcls, loc, i->arg[0], R);
 }
 
 static void
@@ -577,10 +577,10 @@ selvastart(Fn *fn, Params p, Ref ap)
 	Ref rsave;
 	int s;
 
-	rsave = newtmp("abi", Kl, fn);
-	emit(Ostorel, Kw, R, rsave, ap);
+	rsave = newtmp("abi", regcls, fn);
+	emit(Ostorew + regcls , Kw, R, rsave, ap);
 	s = p.stk > 2 + 8 * fn->vararg ? p.stk : 2 + p.ngp;
-	emit(Oaddr, Kl, rsave, SLOT(-s), R);
+	emit(Oaddr, regcls, rsave, SLOT(-s), R);
 }
 
 void

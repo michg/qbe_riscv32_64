@@ -31,6 +31,27 @@ rv64_memargs(int op)
 	return 0;
 }
 
+int opt_rv32 = 0;
+int regsize;
+int regcls;
+char *ldreg;
+char *streg;
+
+Topt rvopts[] = {{"rv32", &opt_rv32}, {"", 0}};
+struct t_prop {
+  int regsize;
+  int regcls;
+  char *ldreg;
+  char *streg;
+} rv_prop[2] = {{8, Kl, "ld", "sd"}, {4, Kw, "lw","sw"}};
+
+void rv64_init() {
+    regsize = rv_prop[opt_rv32].regsize;
+    regcls = rv_prop[opt_rv32].regcls;
+    ldreg = rv_prop[opt_rv32].ldreg;
+    streg = rv_prop[opt_rv32].streg;
+}
+
 Target T_rv64 = {
 	.name = "rv64",
 	.gpr0 = T0,
@@ -44,13 +65,17 @@ Target T_rv64 = {
 	.retregs = rv64_retregs,
 	.argregs = rv64_argregs,
 	.memargs = rv64_memargs,
+	.topts = rvopts,
 	.abi0 = elimsb,
 	.abi1 = rv64_abi,
 	.isel = rv64_isel,
 	.emitfn = rv64_emitfn,
 	.emitfin = elf_emitfin,
 	.asloc = ".L",
+	.init = rv64_init,
 };
+
+
 
 MAKESURE(rsave_size_ok, sizeof rv64_rsave == (NGPS+NFPS+1) * sizeof(int));
 MAKESURE(rclob_size_ok, sizeof rv64_rclob == (NCLR+1) * sizeof(int));

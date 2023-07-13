@@ -39,6 +39,11 @@ struct Rv64Op {
 extern int rv64_rsave[];
 extern int rv64_rclob[];
 extern Rv64Op rv64_op[];
+extern int opt_rv32;
+extern int regsize;
+extern int regcls;
+extern char *ldreg;
+extern char *streg;
 
 /* abi.c */
 bits rv64_retregs(Ref, int[2]);

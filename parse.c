@@ -761,7 +761,8 @@ static int
 usecheck(Ref r, int k, Fn *fn)
 {
 	return rtype(r) != RTmp || fn->tmp[r.val].cls == k
-		|| (fn->tmp[r.val].cls == Kl && k == Kw);
+		|| (fn->tmp[r.val].cls == Kl && k == Kw)
+		|| (fn->tmp[r.val].cls == Kw && k == Kl);
 }
 
 static void

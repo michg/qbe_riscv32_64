@@ -31,6 +31,7 @@ typedef struct Field Field;
 typedef struct Dat Dat;
 typedef struct Lnk Lnk;
 typedef struct Target Target;
+typedef struct Topt Topt;
 
 enum {
 	NString = 80,
@@ -40,6 +41,10 @@ enum {
 	NBit    = CHAR_BIT * sizeof(bits),
 };
 
+struct Topt {
+    char name[8];
+    int *val;
+};
 struct Target {
 	char name[16];
 	char apple;
@@ -51,6 +56,7 @@ struct Target {
 	int nrglob;
 	int *rsave; /* caller-save */
 	int nrsave[2];
+	Topt *topts;
 	bits (*retregs)(Ref, int[2]);
 	bits (*argregs)(Ref, int[2]);
 	int (*memargs)(int);
@@ -61,6 +67,7 @@ struct Target {
 	void (*emitfin)(FILE *);
 	char asloc[4];
 	char assym[4];
+	void (*init)();
 };
 
 #define BIT(n) ((bits)1 << (n))

@@ -55,8 +55,7 @@ config.h:
 	esac > $@
 
 install: qbe
-	mkdir -p "$(DESTDIR)$(BINDIR)"
-	install -m755 qbe "$(DESTDIR)$(BINDIR)/qbe"
+	cp qbe "$(DESTDIR)$(BINDIR)/qbe"
 
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/qbe"

@@ -44,7 +44,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
 			vgrow(&fn->con, ++fn->ncon);
 			c = &fn->con[fn->ncon-1];
-			sprintf(buf, "\"%sfp%d\"", T.asloc, n);
+			sprintf(buf, "%sfp%d", T.asloc, n);
 			*c = (Con){.type = CAddr};
 			c->sym.id = intern(buf);
 			emit(Oload, k, r1, CON(c-fn->con), R);
@@ -69,14 +69,12 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 			emit(Oaddr, k, r1, SLOT(s), R);
 			break;
 		}
-		if (k == Kw && fn->tmp[r0.val].cls == Kl) {
+		if (k == Kw && fn->tmp[r0.val].cls == regcls) {
 			/* TODO: this sign extension isn't needed
 			 * for 32-bit arithmetic instructions
 			 */
 			r1 = newtmp("isel", k, fn);
-			emit(Oextsw, Kl, r1, r0, R);
-		} else {
-			assert(k == fn->tmp[r0.val].cls);
+			emit(Oextsw, regcls, r1, r0, R);
 		}
 		break;
 	}

@@ -62,10 +62,10 @@ static struct {
 	{ Oload,   Kl, "ld %=, %M0" },
 	{ Oload,   Ks, "flw %=, %M0" },
 	{ Oload,   Kd, "fld %=, %M0" },
-	{ Oextsb,  Ki, "sext.b %=, %0" },
-	{ Oextub,  Ki, "zext.b %=, %0" },
-	{ Oextsh,  Ki, "sext.h %=, %0" },
-	{ Oextuh,  Ki, "zext.h %=, %0" },
+	{ Oextsb,  Ki,  "slli %=, %0, 24\n\tsrai %=, %=, 24" },
+	{ Oextub,  Ki, "andi %=, %0, 255" },  // zext.b
+	{ Oextsh,  Ki, "slli %=, %0, 16\n\tsrai %=, %=, 16" },
+	{ Oextuh,  Ki,  "slli %=, %0, 16\n\tsrli %=, %=, 16" },
 	{ Oextsw,  Kl, "sext.w %=, %0" },
 	{ Oextuw,  Kl, "zext.w %=, %0" },
 	{ Otruncd, Ks, "fcvt.s.d %=, %0" },
@@ -123,7 +123,7 @@ slot(Ref r, Fn *fn)
 	s = rsval(r);
 	assert(s <= fn->slot);
 	if (s < 0)
-		return 8 * -s;
+		return regsize * -s;
 	else
 		return -4 * (fn->slot - s);
 }
@@ -165,7 +165,7 @@ emitf(char *s, Ins *i, Fn *fn, FILE *f)
 				fputs("ft11", f);
 			break;
 		case 'k':
-			if (i->cls != Kl)
+			if((KBASE(i->cls)==1)||!opt_rv32 && i->cls != Kl)
 				fputc(clschr[i->cls], f);
 			break;
 		case '=':
@@ -262,9 +262,9 @@ loadcon(Con *c, int r, int k, FILE *f)
 		break;
 	case CBits:
 		n = c->bits.i;
-		if (!KWIDE(k))
-			n = (int32_t)n;
-		fprintf(f, "\tli %s, %"PRIi64"\n", rn, n);
+		if (opt_rv32 || !KWIDE(k))
+		     n = (int32_t)n;
+                fprintf(f, "\tli %s, %"PRIi64"\n", rn, n);
 		break;
 	default:
 		die("invalid constant");
@@ -405,6 +405,12 @@ emitins(Ins *i, Fn *fn, FILE *f)
 		if (!req(i->to, R))
 			emitf("mv %=, sp", i, fn, f);
 		break;
+	case Oextsw:
+	case Oextuw:
+	    if(i->to.val != i->arg[0].val)
+	        emitf("mv %=, %0", i, fn, f);
+	    break;
+
 	}
 }
 
@@ -449,21 +455,21 @@ rv64_emitfn(Fn *fn, FILE *f)
 		/* TODO: only need space for registers
 		 * unused by named arguments
 		 */
-		fprintf(f, "\tadd sp, sp, -64\n");
+		fprintf(f, "\tadd sp, sp, -%d\n",8*regsize);
 		for (r=A0; r<=A7; r++)
 			fprintf(f,
-				"\tsd %s, %d(sp)\n",
-				rname[r], 8 * (r - A0)
+				"\t%s %s, %d(sp)\n",
+				streg, rname[r], regsize * (r - A0)
 			);
 	}
-	fprintf(f, "\tsd fp, -16(sp)\n");
-	fprintf(f, "\tsd ra, -8(sp)\n");
-	fprintf(f, "\tadd fp, sp, -16\n");
+	fprintf(f, "\t%s fp, -%d(sp)\n", streg, 2*regsize);
+	fprintf(f, "\t%s ra, -%d(sp)\n", streg, regsize);
+	fprintf(f, "\tadd fp, sp, -%d\n", 2*regsize);
 
-	frame = (16 + 4 * fn->slot + 15) & ~15;
+	frame = (2*regsize + 4 * fn->slot + 15) & ~15;
 	for (pr=rv64_rclob; *pr>=0; pr++) {
 		if (fn->reg & BIT(*pr))
-			frame += 8;
+			frame += regsize;
 	}
 	frame = (frame + 15) & ~15;
 
@@ -481,11 +487,11 @@ rv64_emitfn(Fn *fn, FILE *f)
 	for (pr=rv64_rclob, off=0; *pr>=0; pr++) {
 		if (fn->reg & BIT(*pr)) {
 			fprintf(f,
-				"\t%s %s, %d(sp)\n",
-				*pr < FT0 ? "sd" : "fsd",
-				rname[*pr], off
+				"\t%s%s %s, %d(sp)\n",
+				*pr < FT0 ? " " : "f",
+				streg, rname[*pr], off
 			);
-			off += 8;
+			off += regsize;
 		}
 	}
 
@@ -501,34 +507,34 @@ rv64_emitfn(Fn *fn, FILE *f)
 			break;
 		case Jret0:
 			if (fn->dynalloc) {
-				if (frame - 16 <= 2048)
+				if (frame - 2*regsize <= 2048)
 					fprintf(f,
 						"\tadd sp, fp, -%d\n",
-						frame - 16
+						frame - 2*regsize
 					);
 				else
 					fprintf(f,
 						"\tli t6, %d\n"
 						"\tsub sp, fp, t6\n",
-						frame - 16
+						frame - 2*regsize
 					);
 			}
 			for (pr=rv64_rclob, off=0; *pr>=0; pr++) {
 				if (fn->reg & BIT(*pr)) {
 					fprintf(f,
-						"\t%s %s, %d(sp)\n",
-						*pr < FT0 ? "ld" : "fld",
-						rname[*pr], off
-					);
-					off += 8;
+						"\t%s%s %s, %d(sp)\n",
+						*pr < FT0 ? " " : "f",
+					   ldreg, rname[*pr], off
+					   );
+					off += regsize;
 				}
 			}
 			fprintf(f,
 				"\tadd sp, fp, %d\n"
-				"\tld ra, 8(fp)\n"
-				"\tld fp, 0(fp)\n"
+				"\t%s ra, %d(fp)\n"
+				"\t%s fp, 0(fp)\n"
 				"\tret\n",
-				16 + fn->vararg * 64
+				2*regsize + fn->vararg * 8*regsize, ldreg, regsize, ldreg
 			);
 			break;
 		case Jjmp:
