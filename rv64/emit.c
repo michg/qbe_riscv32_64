@@ -62,12 +62,12 @@ static struct {
 	{ Oload,   Kl, "ld %=, %M0" },
 	{ Oload,   Ks, "flw %=, %M0" },
 	{ Oload,   Kd, "fld %=, %M0" },
-	{ Oextsb,  Ki,  "slli %=, %0, 24\n\tsrai %=, %=, 24" },
+	{ Oextsb,  Ki,  "slli %=, %0, %s1\n\tsrai %=, %=, %s1" },
 	{ Oextub,  Ki, "andi %=, %0, 255" },  // zext.b
-	{ Oextsh,  Ki, "slli %=, %0, 16\n\tsrai %=, %=, 16" },
-	{ Oextuh,  Ki,  "slli %=, %0, 16\n\tsrli %=, %=, 16" },
-	{ Oextsw,  Kl, "sext.w %=, %0" },
-	{ Oextuw,  Kl, "zext.w %=, %0" },
+	{ Oextsh,  Ki, "slli %=, %0, %s2\n\tsrai %=, %=, %s2" },
+	{ Oextuh,  Ki, "slli %=, %0, %s2\n\tsrli %=, %=, %s2" },
+	{ Oextsw,  Kl, "slli %=, %0, %s4\n\tsrai %=, %=, %s4" },
+	{ Oextuw,  Kl, "slli %=, %0, %s4\n\tsrli %=, %=, %s4" },
 	{ Otruncd, Ks, "fcvt.s.d %=, %0" },
 	{ Oexts,   Kd, "fcvt.d.s %=, %0" },
 	{ Ostosi,  Kw, "fcvt.w.s %=, %0, rtz" },
@@ -145,6 +145,7 @@ emitf(char *s, Ins *i, Fn *fn, FILE *f)
 	int k, c;
 	Con *pc;
 	int64_t offset;
+	int scnt;
 
 	fputc('\t', f);
 	for (;;) {
@@ -222,6 +223,11 @@ emitf(char *s, Ins *i, Fn *fn, FILE *f)
 				break;
 			}
 			break;
+		case 's':
+			c = *s++;
+			scnt = 8*(regsize - (c - '0'));
+			fprintf(f, "%d", scnt);
+		break;
 		}
 	}
 }
@@ -407,10 +413,10 @@ emitins(Ins *i, Fn *fn, FILE *f)
 		break;
 	case Oextsw:
 	case Oextuw:
-	    if(i->to.val != i->arg[0].val)
-	        emitf("mv %=, %0", i, fn, f);
-	    break;
-
+		if(!opt_rv32) goto Table;
+		if(i->to.val != i->arg[0].val)
+		emitf("mv %=, %0", i, fn, f);
+		break;
 	}
 }
 
