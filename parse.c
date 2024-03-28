@@ -155,7 +155,7 @@ static Blk **blink;
 static Blk *blkh[BMask+1];
 static int nblk;
 static int rcls;
-static uint ntyp;
+uint ntyp;
 
 void
 err(char *s, ...)

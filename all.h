@@ -42,8 +42,8 @@ enum {
 };
 
 struct Topt {
-    char name[8];
-    int *val;
+	char *name;
+	int *val;
 };
 struct Target {
 	char name[16];

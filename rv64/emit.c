@@ -22,7 +22,7 @@ static struct {
 	{ Orem,    Kl, "rem %=, %0, %1" },
 	{ Oudiv,   Ki, "divu%k %=, %0, %1" },
 	{ Ourem,   Ki, "remu%k %=, %0, %1" },
-	{ Omul,    Ki, "mul%k %=, %0, %1" },
+	{ Omul,    Ki, "mul%k %=, %0, %1\n\tnop" },
 	{ Omul,    Ka, "fmul.%k %=, %0, %1" },
 	{ Oand,    Ki, "and %=, %0, %1" },
 	{ Oor,     Ki, "or %=, %0, %1" },
@@ -32,6 +32,8 @@ static struct {
 	{ Oshl,    Ki, "sll%k %=, %0, %1" },
 	{ Ocsltl,  Ki, "slt %=, %0, %1" },
 	{ Ocultl,  Ki, "sltu %=, %0, %1" },
+	{ Ocsltw,  Ki, "slt %=, %0, %1" },
+	{ Ocultw,  Ki, "sltu %=, %0, %1" },
 	{ Oceqs,   Ki, "feq.s %=, %0, %1" },
 	{ Ocges,   Ki, "fge.s %=, %0, %1" },
 	{ Ocgts,   Ki, "fgt.s %=, %0, %1" },
@@ -166,7 +168,7 @@ emitf(char *s, Ins *i, Fn *fn, FILE *f)
 				fputs("ft11", f);
 			break;
 		case 'k':
-			if((KBASE(i->cls)==1)||!opt_rv32 && i->cls != Kl)
+			if((KBASE(i->cls)==1)||(!opt_rv32 && i->cls != Kl))
 				fputc(clschr[i->cls], f);
 			break;
 		case '=':

@@ -1,5 +1,8 @@
 #include "all.h"
-
+Typ *ty;
+Typ llstruc = {.name="llstruct", .isdark=0, .isunion=1, .align=3, .size=8};
+extern uint ntyp;
+int lltyno = 0;
 /* the risc-v lp64d abi */
 
 typedef struct Class Class;
@@ -23,6 +26,7 @@ struct Class {
 	char ngp; /* only valid after typclass() */
 	char nfp; /* ditto */
 	char nreg;
+	char lowerll;
 };
 
 struct Insl {
@@ -98,10 +102,12 @@ fpstruct(Typ *t, int off, Class *c)
 {
 	Field *f;
 	int n;
-
+  if(strcmp(t->name,"llstruct") == 0)
+		c->lowerll = 1;
+	else
+	  c->lowerll = 0;
 	if (t->isunion)
 		return -1;
-
 	for (f=*t->fields; f->type != FEnd; f++)
 		if (f->type == FPad)
 			off += f->len;
@@ -125,7 +131,6 @@ fpstruct(Typ *t, int off, Class *c)
 			c->off[n] = off;
 			off += f->len;
 		}
-
 	return c->nfp;
 }
 
@@ -171,13 +176,13 @@ typclass(Class *c, Typ *t, int fpabi, int *gp, int *fp)
 }
 
 static void
-sttmps(Ref tmp[], int ntmp, Class *c, Ref mem, Fn *fn)
+sttmps(Ref tmp[], int ntmp, Class *c, Ref mem, Fn *fn, int par)
 {
 	static int st[] = {
 		[Kw] = Ostorew, [Kl] = Ostorel,
 		[Ks] = Ostores, [Kd] = Ostored
 	};
-	int i;
+	int i, cls;
 	Ref r;
 
 	assert(ntmp > 0);
@@ -186,20 +191,26 @@ sttmps(Ref tmp[], int ntmp, Class *c, Ref mem, Fn *fn)
 		tmp[i] = newtmp("abi", c->cls[i], fn);
 		r = newtmp("abi", regcls, fn);
 		emit(st[c->cls[i]], 0, R, tmp[i], r);
-		emit(Oadd, regcls, r, mem, getcon(c->off[i], fn));
+		cls = regcls;
+		if(!par && c->lowerll) cls = Kl;
+		emit(Oadd, cls, r, mem, getcon(c->off[i], fn));
 	}
 }
+
 
 static void
 ldregs(Class *c, Ref mem, Fn *fn)
 {
 	int i;
 	Ref r;
+	int cls;
 
 	for (i=0; i<c->nreg; i++) {
 		r = newtmp("abi", regcls, fn);
 		emit(Oload, c->cls[i], TMP(c->reg[i]), r, R);
-		emit(Oadd, regcls, r, mem, getcon(c->off[i], fn));
+		cls = regcls;
+		if(c->lowerll) cls = Kl;
+		emit(Oadd, cls, r, mem, getcon(c->off[i], fn));
 	}
 }
 
@@ -340,7 +351,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 {
 	Ins *i;
 	Class *ca, *c, cr;
-	int j, k, cty;
+	int j, k, cty, cls;
 	uint64_t stk, off;
 	Ref r, r1, r2, tmp[2];
 
@@ -379,7 +390,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 			 */
 			emit(Ocopy, Kw, R, TMP(A0), R);
 		else {
-			sttmps(tmp, cr.nreg, &cr, i1->to, fn);
+			sttmps(tmp, cr.nreg, &cr, i1->to, fn, 0);
 			for (j=0; j<cr.nreg; j++) {
 				r = TMP(cr.reg[j]);
 				emit(Ocopy, cr.cls[j], tmp[j], r, R);
@@ -457,7 +468,12 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 				r2 = newtmp("abi", regcls, fn);
 				emit(Ostorew, 0, R, r2, r1);
 				emit(Oadd, regcls, r1, r, getcon(off, fn));
-				emit(Oload, regcls, r2, i->arg[1], R);
+				if(c->lowerll) {
+					r1 = newtmp("abi", regcls, fn);
+					emit(Oload, regcls, r2, r1, R);
+					emit(Oadd, Kl, r1, i->arg[1], getcon(0, fn));
+				} else
+					emit(Oload, regcls, r2, i->arg[1], R);
 				off += regsize;
 			}
 			if (c->class & Cstk2) {
@@ -467,7 +483,9 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 				emit(Oadd, regcls, r1, r, getcon(off, fn));
 				r1 = newtmp("abi", regcls, fn);
 				emit(Oload, regcls, r2, r1, R);
-				emit(Oadd, regcls, r1, i->arg[1], getcon(4, fn));
+				cls = regcls;
+				if(c->lowerll) cls = Kl;
+				emit(Oadd, cls, r1, i->arg[1], getcon(regsize, fn));
 				off += regsize;
 			}
 		}
@@ -519,7 +537,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
 				assert(nt == 1);
 				nt = 2;
 			}
-			sttmps(t, nt, c, i->to, fn);
+			sttmps(t, nt, c, i->to, fn, 1);
 			stkblob(i->to, c->type, fn, &il);
 			t += nt;
 		}
@@ -558,17 +576,98 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
 	};
 }
 
-static void
-selvaarg(Fn *fn, Ins *i)
-{
-	Ref loc, newloc;
+static void addllsuf(char* s) {
+	sprintf(s + strlen(s),"_ll");
+}
 
-	loc = newtmp("abi", regcls, fn);
-	newloc = newtmp("abi", regcls, fn);
-	emit(Ostorew + regcls, Kw, R, newloc, i->arg[0]);
-	emit(Oadd, regcls, newloc, loc, getcon(regsize, fn));
-	emit(Oload, i->cls, i->to, loc, R);
-	emit(Oload, regcls, loc, i->arg[0], R);
+
+static int isll(Ins * i) {
+  return (KWIDE(i->cls) || i->op==Ostorel || (i->op==Oload && i->cls==Kl) || INRANGE(i->op, Oceql, Ocultl));
+}
+
+static int llselari(Fn *fn, Ins *i, Ins* llargs){
+	switch(i->op) {
+		case Oadd:
+		case Osub:
+		case Omul:
+		case Oand:
+		case Oor:
+		case Oxor:
+		case Odiv:
+		case Orem:
+		case Oudiv:
+		case Ourem:
+				*llargs++ = (Ins){Oargc, Kl, R, {TYPE(lltyno), i->arg[0]}};
+				*llargs++ = (Ins){Oargc, Kl, R, {TYPE(lltyno), i->arg[1]}};
+				*llargs = (Ins){Ocall, Kl, i->to, {R, TYPE(lltyno)}};
+				addllsuf(fn->tmp[i->to.val].name);
+		return 2;
+		case Oceql:
+		case Ocnel:
+		case Ocsgel:
+		case Ocsgtl:
+		case Ocslel:
+		case Ocsltl:
+		case Ocugel:
+		case Ocugtl:
+		case Oculel:
+		case Ocultl:
+					*llargs++ = (Ins){Oargc, Kl, R, {TYPE(lltyno), i->arg[0]}};
+				 *llargs++ = (Ins){Oargc, Kl, R, {TYPE(lltyno), i->arg[1]}};
+				 *llargs = (Ins){Ocall, Kw, i->to, {R, R}};
+			return 2;
+		case Oshl:
+		case Oshr:
+		case Osar:
+				 *llargs++ = (Ins){Oargc, Kl, R, {TYPE(lltyno), i->arg[0]}};
+				 *llargs++ = (Ins){Oarg, Kw, R, {i->arg[1]}};
+					*llargs = (Ins){Ocall, Kl, i->to, {R, TYPE(lltyno)}};
+					addllsuf(fn->tmp[i->to.val].name);
+			return 2;
+		case Oneg:
+				 *llargs++ = (Ins){Oargc, Kl, R, {TYPE(lltyno), i->arg[0]}};
+				 *llargs = (Ins){Ocall, Kl, i->to, {R, TYPE(lltyno)}};
+				 addllsuf(fn->tmp[i->to.val].name);
+			 return 1;
+		case Oextuw:
+		case Oextsw:
+		case Oextsh:
+		case Oextuh:
+		case Oextsb:
+		case Oextub:
+				*llargs++ = (Ins){Oarg, Kw, R, {i->arg[0]}};
+				 *llargs = (Ins){Ocall, Kl, i->to, {R, TYPE(lltyno)}};
+				 addllsuf(fn->tmp[i->to.val].name);
+					return 1;
+		default: err("unsupported long long Operation:%s!", optab[i->op].name);
+	}
+}
+
+static int llselstore(Ins *i, Ins *llargs) {
+	*llargs++ = (Ins){Oargc, Kl, R, {TYPE(lltyno), i->arg[0]}};
+	*llargs++ = (Ins){Oarg, Kw, R, {i->arg[1]}};
+	*llargs =  (Ins){Ocall, Kl, R, {R, R}};
+	return 2;
+}
+
+static int llselload(Fn *fn, Ins *i, Ins *llargs) {
+	*llargs++ = (Ins){Oarg, Kw, R, {i->arg[0]}};
+	*llargs = (Ins){Ocall, Kl, i->to, {R, TYPE(lltyno)}};
+	addllsuf(fn->tmp[i->to.val].name);
+	return 1;
+}
+
+static void
+gencall(int args, Ins *llargs, Fn *fn, char *name, Insl **ilp) {
+	Con *c;
+	char buf[32];
+	vgrow(&fn->con, ++fn->ncon);
+	c = &fn->con[fn->ncon-1];
+	sprintf(buf, "%s_di", name);
+	*c = (Con){.type = CAddr};
+	c->sym.id = intern(buf);
+	llargs[args].arg[0] = CON(c-fn->con);
+	selcall(fn, &llargs[0], &llargs[args], ilp);
 }
 
 static void
@@ -583,6 +682,30 @@ selvastart(Fn *fn, Params p, Ref ap)
 	emit(Oaddr, regcls, rsave, SLOT(-s), R);
 }
 
+
+static void
+selvaarg(Fn *fn, Ins *i, Insl **ilp)
+{
+	Ref loc, newloc, arg0;
+	int args;
+	Ins llargs[3];
+	arg0 = i->arg[0];
+	loc = newtmp("abi", regcls, fn);
+	newloc = newtmp("abi", regcls, fn);
+	emit(Ostorew + regcls, Kw, R, newloc, arg0);
+	if(opt_rv32 && KWIDE(i->cls)) {
+		emit(Oadd, regcls, newloc, loc, getcon(2*regsize, fn));
+		i->arg[0] = loc;
+		args = llselload(fn, i, llargs);
+		gencall(args, llargs, fn, "loadl", ilp);
+	} else {
+		emit(Oadd, regcls, newloc, loc, getcon(regsize, fn));
+		emit(Oload, i->cls, i->to, loc, R);
+	}
+	emit(Oload, regcls, loc, arg0, R);
+}
+
+
 void
 rv64_abi(Fn *fn)
 {
@@ -591,14 +714,33 @@ rv64_abi(Fn *fn)
 	Insl *il;
 	int n;
 	Params p;
+	int  j, k;
 
+	if(opt_rv32 && !lltyno) {
+		lltyno = ntyp;
+		vgrow(&typ, ntyp+1);
+		ty = &typ[ntyp++];
+		*ty = llstruc;
+	}
+
+
+	int args;
+	Ins llargs[3];
 	for (b=fn->start; b; b=b->link)
 		b->visit = 0;
 
 	/* lower parameters */
-	for (b=fn->start, i=b->ins; i<&b->ins[b->nins]; i++)
+	for (b=fn->start, i=b->ins; i<&b->ins[b->nins]; i++) {
 		if (!ispar(i->op))
 			break;
+		if(opt_rv32)
+		if(KWIDE(i->cls)) {
+			i->op = Oparc;
+			i->cls = Kl;
+			i->arg[0] = TYPE(lltyno);
+			i->arg[1] = TYPE(lltyno);
+		}
+	}
 	p = selpar(fn, b->ins, i);
 	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
 	i0 = alloc(n * sizeof(Ins));
@@ -616,16 +758,48 @@ rv64_abi(Fn *fn)
 		if (b->visit)
 			continue;
 		curi = &insb[NIns];
+		if(opt_rv32){
+			j = b->jmp.type;
+			if (isret(j) && j != Jret0) {
+				k = j - Jretw;
+				if(KWIDE(k)) {
+					b->jmp.type = Jretc;
+					fn->retty = lltyno;
+				}
+			}
+		}
 		selret(b, fn);
-		for (i=&b->ins[b->nins]; i!=b->ins;)
+		for (i=&b->ins[b->nins]; i!=b->ins;) {
 			switch ((--i)->op) {
 			default:
+				if(opt_rv32 && i)
+				if(!INRANGE(i->op, Oalloc4, Oalloc16) && (i->op!=Ocopy))
+				if(isll(i)) {
+					if(i->op==Ostorel) args = llselstore(i, llargs);
+					else if(i->op==Oload) args = llselload(fn, i, llargs);
+					else args = llselari(fn, i, llargs);
+					gencall(args, llargs, fn, optab[i->op].name, &il);
+					break;
+				}
 				emiti(*i);
 				break;
 			case Ocall:
-				for (i0=i; i0>b->ins; i0--)
+				for (i0=i; i0>b->ins; i0--) {
+					if(opt_rv32) {
+						if(i0->op == Ocall && KWIDE(i0->cls) && req(i0->arg[1], R)) {
+							i0->cls = Kl;
+							i0->arg[1] = TYPE(lltyno);
+							addllsuf(fn->tmp[i0->to.val].name);
+						} else if(i0->op == Oarg && KWIDE(i0->cls)) {
+							i0->arg[1] = i0->arg[0];
+							i0->op = Oargc;
+							i0->cls = Kl;
+							i0->arg[0] = TYPE(lltyno);
+						}
+					}
 					if (!isarg((i0-1)->op))
 						break;
+				}
 				selcall(fn, i0, i, &il);
 				i = i0;
 				break;
@@ -633,18 +807,20 @@ rv64_abi(Fn *fn)
 				selvastart(fn, p, i->arg[0]);
 				break;
 			case Ovaarg:
-				selvaarg(fn, i);
+				selvaarg(fn, i, &il);
 				break;
 			case Oarg:
 			case Oargc:
 				die("unreachable");
 			}
+		}
 		if (b == fn->start)
 			for (; il; il=il->link)
 				emiti(il->i);
 		b->nins = &insb[NIns] - curi;
 		idup(&b->ins, curi, b->nins);
 	} while (b != fn->start);
+
 
 	if (debug['A']) {
 		fprintf(stderr, "\n> After ABI lowering:\n");

@@ -16,6 +16,13 @@ immarg(Ref *r, int op, Ins *i)
 	return rv64_op[op].imm && r == &i->arg[1];
 }
 
+static int islowered(char* s) {
+	int len;
+	len = strlen(s);
+	if(len<3) return 0;
+	return (strncmp(s + len - 3,"_ll", 3) == 0);
+}
+
 static void
 fixarg(Ref *r, int k, Ins *i, Fn *fn)
 {
@@ -35,7 +42,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 		if (-2048 <= c->bits.i && c->bits.i < 2048)
 			break;
 		r1 = newtmp("isel", k, fn);
-		if (KBASE(k) == 1) {
+		if (KBASE(k) == 1 || (opt_rv32 && i && KWIDE(i->cls) && i->op!=Osalloc)) {
 			/* load floating points from memory
 			 * slots, they can't be used as
 			 * immediates
@@ -47,6 +54,10 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 			sprintf(buf, "%sfp%d", T.asloc, n);
 			*c = (Con){.type = CAddr};
 			c->sym.id = intern(buf);
+			if(opt_rv32 && i && KWIDE(i->cls)) {
+			k = Kw;
+			emit(Ocopy, k, r1, CON(c-fn->con), R);
+			} else
 			emit(Oload, k, r1, CON(c-fn->con), R);
 			break;
 		}
@@ -62,9 +73,18 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 			 * replace with slot if we can
 			 */
 			if (memarg(r, op, i)) {
+				if(islowered(fn->tmp[r0.val].name)) goto lower;
 				r1 = SLOT(s);
 				break;
 			}
+
+			if(islowered(fn->tmp[r0.val].name) && i && (INRANGE(i->op, Oextsb, Oextuh) || i->cls==Kw )) { 
+				r1 = newtmp("isel", k, fn);
+				emit(Oload, k, r1, SLOT(s), R);
+				*r = r1;
+				return;
+			}
+			lower:
 			r1 = newtmp("isel", k, fn);
 			emit(Oaddr, k, r1, SLOT(s), R);
 			break;
@@ -154,8 +174,12 @@ selcmp(Ins i, int k, int op, Fn *fn)
 	default:
 		assert(0 && "unknown comparison");
 	}
-	if (op < NCmpI)
-		i.op = sign ? Ocsltl : Ocultl;
+	if (op < NCmpI) {
+		if(opt_rv32)
+		  i.op = sign ? Ocsltw : Ocultw;
+		else
+			i.op = sign ? Ocsltl : Ocultl;
+	}
 	if (swap) {
 		r = i.arg[0];
 		i.arg[0] = i.arg[1];
