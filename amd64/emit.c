@@ -649,5 +649,5 @@ amd64_emitfn(Fn *fn, FILE *f)
 	}
 	id0 += fn->nblk;
 	if (!T.apple)
-		elf_emitfnfin(fn->name, f);
+		elf_emitfnfin(fn, f);
 }

@@ -190,10 +190,12 @@ elf_emitfin(FILE *f)
 }
 
 void
-elf_emitfnfin(char *fn, FILE *f)
+elf_emitfnfin(Fn *fn, FILE *f)
 {
-	fprintf(f, ".type %s, @function\n", fn);
-	fprintf(f, ".size %s, .-%s\n", fn, fn);
+	if(fn->lnk.export)
+		fprintf(f, ".globl %s_end\n%s_end:\n", fn->name, fn->name);
+	fprintf(f, ".type %s, @function\n", fn->name);
+	fprintf(f, ".size %s, .-%s\n", fn->name, fn->name);
 }
 
 void

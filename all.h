@@ -42,8 +42,8 @@ enum {
 };
 
 struct Topt {
-	char *name;
-	int *val;
+    char *name;
+    int *val;
 };
 struct Target {
 	char name[16];
@@ -576,6 +576,6 @@ void rega(Fn *);
 void emitfnlnk(char *, Lnk *, FILE *);
 void emitdat(Dat *, FILE *);
 int stashbits(void *, int);
-void elf_emitfnfin(char *, FILE *);
+void elf_emitfnfin(Fn *, FILE *);
 void elf_emitfin(FILE *);
 void macho_emitfin(FILE *);
