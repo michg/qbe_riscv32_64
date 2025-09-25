@@ -37,7 +37,7 @@ enum {
 static struct {
 	short op;
 	short cls;
-	char *asm;
+	char *fmt;
 } omap[] = {
 	{ Oadd,    Ki, "add %=, %0, %1" },
 	{ Oadd,    Ka, "fadd %=, %0, %1" },
@@ -160,7 +160,8 @@ emitf(char *s, Ins *i, E *e)
 	Ref r;
 	int k, c;
 	Con *pc;
-	uint n, sp;
+	uint64_t n;
+	uint sp;
 
 	fputc('\t', e->f);
 
@@ -194,7 +195,7 @@ emitf(char *s, Ins *i, E *e)
 			goto Switch;
 		case '?':
 			if (KBASE(k) == 0)
-				fputs(rname(R18, k), e->f);
+				fputs(rname(IP1, k), e->f);
 			else
 				fputs(k==Ks ? "s31" : "d31", e->f);
 			break;
@@ -217,10 +218,17 @@ emitf(char *s, Ins *i, E *e)
 				pc = &e->fn->con[r.val];
 				n = pc->bits.i;
 				assert(pc->type == CBits);
-				if (n & 0xfff000)
-					fprintf(e->f, "#%u, lsl #12", n>>12);
-				else
-					fprintf(e->f, "#%u", n);
+				if (n >> 24) {
+					assert(arm64_logimm(n, k));
+					fprintf(e->f, "#%"PRIu64, n);
+				} else if (n & 0xfff000) {
+					assert(!(n & ~0xfff000ull));
+					fprintf(e->f, "#%"PRIu64", lsl #12",
+						n>>12);
+				} else {
+					assert(!(n & ~0xfffull));
+					fprintf(e->f, "#%"PRIu64, n);
+				}
 				break;
 			}
 			break;
@@ -304,6 +312,7 @@ loadcon(Con *c, int r, int k, E *e)
 	rn = rname(r, k);
 	n = c->bits.i;
 	if (c->type == CAddr) {
+		rn = rname(r, Kl);
 		loadaddr(c, rn, e);
 		return;
 	}
@@ -337,9 +346,9 @@ fixarg(Ref *pr, int sz, E *e)
 	if (rtype(r) == RSlot) {
 		s = slot(r, e);
 		if (s > sz * 4095u) {
-			i = &(Ins){Oaddr, Kl, TMP(IP0), {r}};
+			i = &(Ins){Oaddr, Kl, TMP(IP1), {r}};
 			emitins(i, e);
-			*pr = TMP(IP0);
+			*pr = TMP(IP1);
 		}
 	}
 }
@@ -374,7 +383,7 @@ emitins(Ins *i, E *e)
 			|| (omap[o].cls == Ki && KBASE(i->cls) == 0))
 				break;
 		}
-		emitf(omap[o].asm, i, e);
+		emitf(omap[o].fmt, i, e);
 		break;
 	case Onop:
 		break;
@@ -384,7 +393,7 @@ emitins(Ins *i, E *e)
 		if (rtype(i->to) == RSlot) {
 			r = i->to;
 			if (!isreg(i->arg[0])) {
-				i->to = TMP(R18);
+				i->to = TMP(IP1);
 				emitins(i, e);
 				i->arg[0] = i->to;
 			}
@@ -405,7 +414,7 @@ emitins(Ins *i, E *e)
 			emitins(i, e);
 			break;
 		default:
-			assert(i->to.val != R18);
+			assert(i->to.val != IP1);
 			goto Table;
 		}
 		break;
@@ -445,6 +454,9 @@ emitins(Ins *i, E *e)
 		emitf("sub sp, sp, %0", i, e);
 		if (!req(i->to, R))
 			emitf("mov %=, sp", i, e);
+		break;
+	case Odbgloc:
+		emitdbgloc(i->arg[0].val, i->arg[1].val, e->f);
 		break;
 	}
 }
@@ -511,6 +523,7 @@ arm64_emitfn(Fn *fn, FILE *out)
 	if (T.apple)
 		e->fn->lnk.align = 4;
 	emitfnlnk(e->fn->name, &e->fn->lnk, e->f);
+	fputs("\thint\t#34\n", e->f);
 	framelayout(e);
 
 	if (e->fn->vararg && !T.apple) {

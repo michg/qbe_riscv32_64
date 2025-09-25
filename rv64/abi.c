@@ -473,7 +473,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 					emit(Oload, regcls, r2, r1, R);
 					emit(Oadd, Kl, r1, i->arg[1], getcon(0, fn));
 				} else
-					emit(Oload, regcls, r2, i->arg[1], R);
+					emit(Oload, regcls, r2, i->arg[1], R);			        
 				off += regsize;
 			}
 			if (c->class & Cstk2) {
@@ -485,12 +485,12 @@ selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 				emit(Oload, regcls, r2, r1, R);
 				cls = regcls;
 				if(c->lowerll) cls = Kl;
-				emit(Oadd, cls, r1, i->arg[1], getcon(regsize, fn));
+				emit(Oadd, cls, r1, i->arg[1], getcon(regsize, fn));				
 				off += regsize;
-			}
 		}
 	}
-	emit(Osalloc, Kl, r, getcon(stk, fn), R);
+	}	
+	emit(Osalloc, regcls, r, getcon(stk, fn), R);
 }
 
 static Params
@@ -710,11 +710,12 @@ void
 rv64_abi(Fn *fn)
 {
 	Blk *b;
-	Ins *i, *i0, *ip;
+	Ins *i, *i0, *i1;
 	Insl *il;
-	int n;
+	int n0, n1, ioff;
 	Params p;
 	int  j, k;
+	Con *con;
 
 	if(opt_rv32 && !lltyno) {
 		lltyno = ntyp;
@@ -734,20 +735,21 @@ rv64_abi(Fn *fn)
 		if (!ispar(i->op))
 			break;
 		if(opt_rv32)
-		if(KWIDE(i->cls)) {
+		if(KWIDE(i->cls)) {		    
 			i->op = Oparc;
 			i->cls = Kl;
 			i->arg[0] = TYPE(lltyno);
 			i->arg[1] = TYPE(lltyno);
 		}
 	}
-	p = selpar(fn, b->ins, i);
-	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
-	i0 = alloc(n * sizeof(Ins));
-	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
-	ip = icpy(ip, i, &b->ins[b->nins] - i);
-	b->nins = n;
-	b->ins = i0;
+        p = selpar(fn, b->ins, i);
+	n0 = &insb[NIns] - curi;
+	ioff = i - b->ins;
+	n1 = b->nins - ioff;
+	vgrow(&b->ins, n0+n1);
+	icpy(b->ins+n0, b->ins+ioff, n1);
+	icpy(b->ins, curi, n0);
+	b->nins = n0+n1;
 
 	/* lower calls, returns, and vararg instructions */
 	il = 0;
@@ -785,19 +787,21 @@ rv64_abi(Fn *fn)
 				break;
 			case Ocall:
 				for (i0=i; i0>b->ins; i0--) {
+					i1 = i0-1;
 					if(opt_rv32) {
 						if(i0->op == Ocall && KWIDE(i0->cls) && req(i0->arg[1], R)) {
 							i0->cls = Kl;
 							i0->arg[1] = TYPE(lltyno);
 							addllsuf(fn->tmp[i0->to.val].name);
-						} else if(i0->op == Oarg && KWIDE(i0->cls)) {
-							i0->arg[1] = i0->arg[0];
-							i0->op = Oargc;
-							i0->cls = Kl;
-							i0->arg[0] = TYPE(lltyno);
+						} 
+						if(i1->op == Oarg && KWIDE(i1->cls)) {
+							i1->arg[1] = i1->arg[0];
+							i1->op = Oargc;
+							i1->cls = Kl;
+							i1->arg[0] = TYPE(lltyno);							
 						}
-					}
-					if (!isarg((i0-1)->op))
+                     }
+					 if (!isarg(i1->op))
 						break;
 				}
 				selcall(fn, i0, i, &il);
@@ -817,8 +821,7 @@ rv64_abi(Fn *fn)
 		if (b == fn->start)
 			for (; il; il=il->link)
 				emiti(il->i);
-		b->nins = &insb[NIns] - curi;
-		idup(&b->ins, curi, b->nins);
+		idup(b, curi, &insb[NIns]-curi);
 	} while (b != fn->start);
 
 

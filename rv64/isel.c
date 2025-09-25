@@ -38,17 +38,18 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 		c = &fn->con[r0.val];
 		if (c->type == CAddr && memarg(r, op, i))
 			break;
-		if (c->type == CBits && immarg(r, op, i))
+		if (KBASE(k) == 0 && c->type == CBits && immarg(r, op, i))
 		if (-2048 <= c->bits.i && c->bits.i < 2048)
 			break;
 		r1 = newtmp("isel", k, fn);
-		if (KBASE(k) == 1 || (opt_rv32 && i && KWIDE(i->cls) && i->op!=Osalloc)) {
+		//if (KBASE(k) == 1 || (opt_rv32 && i && KWIDE(i->cls) && i->op!=Osalloc)) {
+		if (KBASE(k) == 1 || (opt_rv32 && i && KWIDE(i->cls))) {
 			/* load floating points from memory
 			 * slots, they can't be used as
 			 * immediates
 			 */
 			assert(c->type == CBits);
-			n = stashbits(&c->bits, KWIDE(k) ? 8 : 4);
+			n = stashbits(c->bits.i, KWIDE(k) ? 8 : 4);
 			vgrow(&fn->con, ++fn->ncon);
 			c = &fn->con[fn->ncon-1];
 			sprintf(buf, "%sfp%d", T.asloc, n);
@@ -266,8 +267,7 @@ rv64_isel(Fn *fn)
 		seljmp(b, fn);
 		for (i=&b->ins[b->nins]; i!=b->ins;)
 			sel(*--i, fn);
-		b->nins = &insb[NIns] - curi;
-		idup(&b->ins, curi, b->nins);
+		idup(b, curi, &insb[NIns]-curi);
 	}
 
 	if (debug['I']) {

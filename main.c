@@ -59,8 +59,7 @@ func(Fn *fn)
 		printfn(fn, stderr);
 	}
 	T.abi0(fn);
-	fillrpo(fn);
-	fillpreds(fn);
+	fillcfg(fn);
 	filluse(fn);
 	promote(fn);
 	filluse(fn);
@@ -73,25 +72,29 @@ func(Fn *fn)
 	fillalias(fn);
 	coalesce(fn);
 	filluse(fn);
+	filldom(fn);
 	ssacheck(fn);
-	copy(fn);
+	gvn(fn);
+	fillcfg(fn);
 	filluse(fn);
-	fold(fn);
+	filldom(fn);
+	gcm(fn);
+	filluse(fn);
+	ssacheck(fn);
 	T.abi1(fn);
 	simpl(fn);
-	fillpreds(fn);
+	fillcfg(fn);
 	filluse(fn);
 	T.isel(fn);
-	fillrpo(fn);
+	fillcfg(fn);
 	filllive(fn);
 	fillloop(fn);
 	fillcost(fn);
 	spill(fn);
 	rega(fn);
-	fillrpo(fn);
+	fillcfg(fn);
 	simpljmp(fn);
-	fillpreds(fn);
-	fillrpo(fn);
+	fillcfg(fn);
 	assert(fn->rpo[0] == fn->start);
 	for (n=0;; n++)
 		if (n == fn->nblk-1) {
@@ -105,6 +108,12 @@ func(Fn *fn)
 	} else
 		fprintf(stderr, "\n");
 	freeall();
+}
+
+static void
+dbgfile(char *fn)
+{
+	emitdbgfile(fn, outf);
 }
 
 int
@@ -150,18 +159,18 @@ main(int ac, char *av[])
 				}
 			}
 			break;
-               case 'm':
-		    for(to = (**t).topts;to->name;to++) {
-		        if(!to->name) {
-		            fprintf(stderr, "unknown target option '%s'\n", optarg);
-		            exit(1);
-		        }
+         case 'm':
+		    for(to = (**t).topts;*to->name;to++) {		    			    	
 		        if(strcmp(to->name, optarg) == 0) {
+		        	fprintf(stdout, "Target Option:%s ",optarg);		        
+		        	fprintf(stdout, "set.\n");
 		            *(to->val) = 1;
-		            break;
-		        }
-		    }
-		    break;
+					continue;
+				}				
+				fprintf(stderr, "unknown target option '%s'\n", optarg);
+		        exit(1);		        
+			}
+			break;
 		case 'h':
 		default:
 			hf = c != 'h' ? stderr : stdout;
@@ -194,7 +203,7 @@ main(int ac, char *av[])
 				exit(1);
 			}
 		}
-		parse(inf, f, data, func);
+		parse(inf, f, dbgfile, data, func);
 		fclose(inf);
 	} while (++optind < ac);
 

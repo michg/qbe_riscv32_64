@@ -296,7 +296,7 @@ coalesce(Fn *fn)
 			if (s->l) {
 				radd(&s->r, ip);
 				if (b->loop != -1) {
-					assert(b->loop > n);
+					assert(b->loop >= n);
 					radd(&s->r, br[b->loop].b - 1);
 				}
 			}
@@ -447,10 +447,15 @@ coalesce(Fn *fn)
 		if (i->op == Oblit0)
 		if (slot(&s, &off0, i->arg[0], fn, sl))
 		if (slot(&s0, &off1, i->arg[1], fn, sl))
-		if (s->s == s0->s && off0 < off1) {
-			sz = rsval((i+1)->arg[0]);
-			assert(sz >= 0);
-			(i+1)->arg[0] = INT(-sz);
+		if (s->s == s0->s) {
+			if (off0 < off1) {
+				sz = rsval((i+1)->arg[0]);
+				assert(sz >= 0);
+				(i+1)->arg[0] = INT(-sz);
+			} else if (off0 == off1) {
+				*i = (Ins){.op = Onop};
+				*(i+1) = (Ins){.op = Onop};
+			}
 		}
 	}
 	vfree(bl);

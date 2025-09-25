@@ -1,8 +1,12 @@
 #!/bin/sh
 
-dir=`cd $(dirname "$0"); pwd`
-bin=$dir/../qbe
-binref=$dir/../qbe.ref
+dir=`dirname "$0"`
+if [ -z "${bin:-}" ]; then
+	bin=$dir/../qbe
+fi
+if [ -z "${binref:-}" ]; then
+	binref=${bin}.ref
+fi
 
 tmp=/tmp/qbe.zzzz
 
@@ -12,9 +16,40 @@ asmref=$tmp.ref.s
 exe=$tmp.exe
 out=$tmp.out
 
-testcc() {
-	echo "int main() { }" | $1 -x c -o /dev/null - >/dev/null 2>&1
-	return $?
+qemu_not_needed() {
+	"$@"
+}
+
+cc=
+find_cc_and_qemu() {
+	if [ -n "$cc" ]; then
+		return
+	fi
+	target="$1"
+	candidate_cc="$2"
+	if $candidate_cc -v >/dev/null 2>&1; then
+		cc=$candidate_cc
+		echo "cc: $cc"
+
+		if [ "$target" = "$(uname -m)" ]; then
+			qemu=qemu_not_needed
+			echo "qemu: not needed, testing native architecture"
+		else
+			qemu="$3"
+			if $qemu -version >/dev/null 2>&1; then
+				sysroot=$($candidate_cc -print-sysroot)
+				if [ -n "$sysroot" ]; then
+					qemu="$qemu -L $sysroot"
+				fi
+				echo "qemu: $qemu"
+			else
+				qemu=
+				echo "qemu: not found"
+			fi
+		fi
+		echo
+
+	fi
 }
 
 init() {
@@ -22,50 +57,38 @@ init() {
 	arm64)
 		for p in aarch64-linux-musl aarch64-linux-gnu
 		do
-			cc="$p-gcc -no-pie -static"
-			qemu="qemu-aarch64"
-			if
-				$cc -v >/dev/null 2>&1 &&
-				$qemu -version >/dev/null 2>&1
-			then
-				if sysroot=$($cc -print-sysroot) && test -n "$sysroot"
-				then
-					qemu="$qemu -L $sysroot"
-				fi
-				break
-			fi
-			cc=
+			find_cc_and_qemu aarch64 "$p-gcc -no-pie -static" "qemu-aarch64"
 		done
-		if test -z "$cc"
+		if test -z "$cc" -o -z "$qemu"
 		then
 			echo "Cannot find arm64 compiler or qemu."
-			exit 1
+			exit 77
 		fi
 		bin="$bin -t arm64"
 		;;
 	rv64)
 		for p in riscv64-linux-musl riscv64-linux-gnu
 		do
-			cc="$p-gcc -no-pie -static"
-			qemu="qemu-riscv64"
-			if
-				$cc -v >/dev/null 2>&1 &&
-				$qemu -version >/dev/null 2>&1
-			then
-				if sysroot=$($cc -print-sysroot) && test -n "$sysroot"
-				then
-					qemu="$qemu -L $sysroot"
-				fi
-				break
-			fi
-			cc=
+			find_cc_and_qemu riscv64 "$p-gcc -no-pie -static" "qemu-riscv64"
 		done
-		if test -z "$cc"
+		if test -z "$cc" -o -z "$qemu"
 		then
 			echo "Cannot find riscv64 compiler or qemu."
-			exit 1
+			exit 77
 		fi
 		bin="$bin -t rv64"
+		;;
+	x86_64)
+		for p in x86_64-linux-musl x86_64-linux-gnu
+		do
+			find_cc_and_qemu x86_64 "$p-gcc -no-pie -static" "qemu-x86_64"
+		done
+		if test -z "$cc" -o -z "$qemu"
+		then
+			echo "Cannot find x86_64 compiler or qemu."
+			exit 77
+		fi
+		bin="$bin -t amd64_sysv"
 		;;
 	"")
 		case `uname` in
@@ -79,15 +102,15 @@ init() {
 			cc="cc -lpthread"
 			;;
 		*)
-			cc="${CC:-cc} -lpthread"
-			testcc "$cc" || cc="${CC:-cc}"
+			cc="${CC:-cc}"
+			ccpost="-lpthread"
 			;;
 		esac
 		TARGET=`$bin -t?`
 		;;
 	*)
 		echo "Unknown target '$TARGET'."
-		exit 1
+		exit 77
 		;;
 	esac
 }
@@ -154,7 +177,7 @@ once() {
 		src="$asm"
 	fi
 
-	if ! $cc -g -o $exe $src
+	if ! $cc -g -o $exe $src $ccpost
 	then
 		echo "[cc fail]"
 		return 1
@@ -201,15 +224,17 @@ fi
 case "$1" in
 "all")
 	fail=0
+	count=0
 	for t in $dir/../test/[!_]*.ssa
 	do
 		once $t
 		fail=`expr $fail + $?`
+		count=`expr $count + 1`
 	done
 	if test $fail -ge 1
 	then
 		echo
-		echo "$fail test(s) failed!"
+		echo "$fail of $count tests failed!"
 	else
 		echo
 		echo "All is fine!"

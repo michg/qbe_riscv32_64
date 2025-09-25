@@ -15,7 +15,7 @@
   2. <@ Types >
       * <@ Simple Types >
       * <@ Subtyping >
-  3. <@ Constants >
+  3. <@ Constants and Vals >
   4. <@ Linkage >
   5. <@ Definitions >
       * <@ Aggregate Types >
@@ -168,8 +168,8 @@ The rationale is that a word can be signed or unsigned, so
 extending it to a long could be done in two ways, either
 by zero-extension, or by sign-extension.
 
-- 3. Constants
---------------
+- 3. Constants and Vals
+-----------------------
 
     `bnf
     CONST :=
@@ -181,6 +181,10 @@ by zero-extension, or by sign-extension.
     DYNCONST :=
         CONST
       | 'thread' $IDENT  # Thread-local symbol
+
+    VAL :=
+        DYNCONST
+      | %IDENT
 
 Constants come in two kinds: compile-time constants and
 dynamic constants.  Dynamic constants include compile-time
@@ -221,6 +225,10 @@ When the `thread` keyword prefixes a symbol name, the
 symbol's numeric value is resolved at runtime in the
 thread-local storage.
 
+Vals are used as arguments in regular, phi, and jump
+instructions within function definitions.  They are
+either constants or function-scope temporaries.
+
 - 4. Linkage
 ------------
 
@@ -250,7 +258,7 @@ thread starts, the supporting platform runtime is in
 charge of making a new copy of the object for the
 fresh thread.  Objects in thread-local storage must
 be accessed using the `thread $IDENT` syntax, as
-specified in the <@ Constants > section.
+specified in the <@ Constants and Vals > section.
 
 A `section` flag can be specified to tell the linker to
 put the defined item in a certain section.  The use of
@@ -293,6 +301,15 @@ using linkage flags.
         '{'
             ( SUBTY [NUMBER] ),
         '}'
+      | # Union type
+        'type' :IDENT '=' ['align' NUMBER]
+        '{'
+            (
+                '{'
+                    ( SUBTY [NUMBER] ),
+                '}'
+            )+
+        '}'
       | # Opaque type
         'type' :IDENT '=' 'align' NUMBER '{' NUMBER '}'
 
@@ -317,6 +334,15 @@ maximum alignment of its members.  The alignment can be
 explicitly specified by the programmer.
 
     type :cryptovector = align 16 { w 4 }
+
+Union types allow the same chunk of memory to be used with
+different layouts.  They are defined by enclosing multiple
+regular aggregate type bodies in a pair of curly braces.
+Size and alignment of union types are set to the maximum size
+and alignment of each variation or, in the case of alignment,
+can be explicitly specified.
+
+    type :un9 = { { b } { s } }
 
 Opaque types are used when the inner structure of an
 aggregate cannot be specified; the alignment for opaque
@@ -413,7 +439,7 @@ return type of the function.  All return values of this
 function must have this return type.  If the return
 type is missing, the function must not return any value.
 
-The parameter list is a comma separated list of
+The parameter list is a comma separated list of distinct
 temporary names prefixed by types.  The types are used
 to correctly implement C compatibility.  When an argument
 has an aggregate type, a pointer to the aggregate is passed

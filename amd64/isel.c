@@ -18,14 +18,7 @@
  *            dce should be moved out...
  */
 
-typedef struct ANum ANum;
-
-struct ANum {
-	char n, l, r;
-	Ins *i;
-};
-
-static int amatch(Addr *, Ref, int, ANum *, Fn *);
+static int amatch(Addr *, Num *, Ref, Fn *);
 
 static int
 noimm(Ref r, Fn *fn)
@@ -94,7 +87,11 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 		vgrow(&fn->mem, ++fn->nmem);
 		memset(&a, 0, sizeof a);
 		a.offset.type = CAddr;
-		n = stashbits(&fn->con[r0.val].bits, KWIDE(k) ? 8 : 4);
+		n = stashbits(fn->con[r0.val].bits.i, KWIDE(k) ? 8 : 4);
+		/* quote the name so that we do not
+		 * add symbol prefixes on the apple
+		 * target variant
+		 */
 		sprintf(buf, "\"%sfp%d\"", T.asloc, n);
 		a.offset.sym.id = intern(buf);
 		fn->mem[fn->nmem-1] = a;
@@ -170,7 +167,7 @@ fixarg(Ref *r, int k, Ins *i, Fn *fn)
 }
 
 static void
-seladdr(Ref *r, ANum *an, Fn *fn)
+seladdr(Ref *r, Num *tn, Fn *fn)
 {
 	Addr a;
 	Ref r0;
@@ -178,7 +175,7 @@ seladdr(Ref *r, ANum *an, Fn *fn)
 	r0 = *r;
 	if (rtype(r0) == RTmp) {
 		memset(&a, 0, sizeof a);
-		if (!amatch(&a, r0, an[r0.val].n, an, fn))
+		if (!amatch(&a, tn, r0, fn))
 			return;
 		if (!req(a.base, R))
 		if (a.offset.type == CAddr) {
@@ -242,7 +239,7 @@ selcmp(Ref arg[2], int k, int swap, Fn *fn)
 }
 
 static void
-sel(Ins i, ANum *an, Fn *fn)
+sel(Ins i, Num *tn, Fn *fn)
 {
 	Ref r0, r1, tmp[7];
 	int x, j, k, kc, sh, swap;
@@ -316,15 +313,15 @@ sel(Ins i, ANum *an, Fn *fn)
 		break;
 	case Oultof:
 		/* %mask =l and %arg.0, 1
-		   %isbig =l shr %arg.0, 63
-		   %divided =l shr %arg.0, %isbig
-		   %or =l or %mask, %divided
-		   %float =d sltof %or
-		   %cast =l cast %float
-		   %addend =l shl %isbig, 52
-		   %sum =l add %cast, %addend
-		   %result =d cast %sum
-		*/
+		 * %isbig =l shr %arg.0, 63
+		 * %divided =l shr %arg.0, %isbig
+		 * %or =l or %mask, %divided
+		 * %float =d sltof %or
+		 * %cast =l cast %float
+		 * %addend =l shl %isbig, 52
+		 * %sum =l add %cast, %addend
+		 * %result =d cast %sum
+		 */
 		r0 = newtmp("utof", k, fn);
 		if (k == Ks)
 			kc = Kw, sh = 23;
@@ -357,8 +354,25 @@ sel(Ins i, ANum *an, Fn *fn)
 		kc = Kd;
 		tmp[4] = getcon(0xc3e0000000000000, fn);
 	Oftoui:
-		if (k == Kw)
+		if (k == Kw) {
+			r0 = newtmp("ftou", Kl, fn);
+			emit(Ocopy, Kw, i.to, r0, R);
+			i.cls = Kl;
+			i.to = r0;
 			goto Emit;
+		}
+		/* %try0 =l {s,d}tosi %fp
+		 * %mask =l sar %try0, 63
+		 *
+		 *    mask is all ones if the first
+		 *    try was oob, all zeroes o.w.
+		 *
+		 * %fps ={s,d} sub %fp, (1<<63)
+		 * %try1 =l {s,d}tosi %fps
+		 *
+		 * %tmp =l and %mask, %try1
+		 * %res =l or %tmp, %try0
+		 */
 		r0 = newtmp("ftou", kc, fn);
 		for (j=0; j<4; j++)
 			tmp[j] = newtmp("ftou", Kl, fn);
@@ -387,11 +401,12 @@ sel(Ins i, ANum *an, Fn *fn)
 			if (i.op == Ostores)
 				i.op = Ostorew;
 		}
-		seladdr(&i.arg[1], an, fn);
+		seladdr(&i.arg[1], tn, fn);
 		goto Emit;
 	case_Oload:
-		seladdr(&i.arg[0], an, fn);
+		seladdr(&i.arg[0], tn, fn);
 		goto Emit;
+	case Odbgloc:
 	case Ocall:
 	case Osalloc:
 	case Ocopy:
@@ -541,155 +556,225 @@ seljmp(Blk *b, Fn *fn)
 	}
 }
 
+enum {
+	Pob,
+	Pbis,
+	Pois,
+	Pobis,
+	Pbi1,
+	Pobi1,
+};
+
+/* mgen generated code
+ *
+ * (with-vars (o b i s)
+ *   (patterns
+ *     (ob   (add (con o) (tmp b)))
+ *     (bis  (add (tmp b) (mul (tmp i) (con s 1 2 4 8))))
+ *     (ois  (add (con o) (mul (tmp i) (con s 1 2 4 8))))
+ *     (obis (add (con o) (tmp b) (mul (tmp i) (con s 1 2 4 8))))
+ *     (bi1  (add (tmp b) (tmp i)))
+ *     (obi1 (add (con o) (tmp b) (tmp i)))
+ * ))
+ */
+
 static int
-aref(Ref r, ANum *ai)
+opn(int op, int l, int r)
 {
-	switch (rtype(r)) {
-	case RCon:
+	static uchar Oaddtbl[91] = {
+		2,
+		2,2,
+		4,4,5,
+		6,6,8,8,
+		4,4,9,10,9,
+		7,7,5,8,9,5,
+		4,4,12,10,12,12,12,
+		4,4,9,10,9,9,12,9,
+		11,11,5,8,9,5,12,9,5,
+		7,7,5,8,9,5,12,9,5,5,
+		11,11,5,8,9,5,12,9,5,5,5,
+		4,4,9,10,9,9,12,9,9,9,9,9,
+		7,7,5,8,9,5,12,9,5,5,5,9,5,
+	};
+	int t;
+
+	if (l < r)
+		t = l, l = r, r = t;
+	switch (op) {
+	case Omul:
+		if (2 <= l)
+		if (r == 0) {
+			return 3;
+		}
 		return 2;
-	case RTmp:
-		return ai[r.val].n;
+	case Oadd:
+		return Oaddtbl[(l + l*l)/2 + r];
 	default:
-		die("constant or temporary expected");
+		return 2;
 	}
 }
 
 static int
-ascale(Ref r, Con *con)
+refn(Ref r, Num *tn, Con *con)
 {
 	int64_t n;
 
-	if (rtype(r) != RCon)
-		return 0;
-	if (con[r.val].type != CBits)
-		return 0;
-	n = con[r.val].bits.i;
-	return n == 1 || n == 2 || n == 4 || n == 8;
+	switch (rtype(r)) {
+	case RTmp:
+		if (!tn[r.val].n)
+			tn[r.val].n = 2;
+		return tn[r.val].n;
+	case RCon:
+		if (con[r.val].type != CBits)
+			return 1;
+		n = con[r.val].bits.i;
+		if (n == 8 || n == 4 || n == 2 || n == 1)
+			return 0;
+		return 1;
+	default:
+		return INT_MIN;
+	}
 }
 
+static bits match[13] = {
+	[4] = BIT(Pob),
+	[5] = BIT(Pbi1),
+	[6] = BIT(Pob) | BIT(Pois),
+	[7] = BIT(Pob) | BIT(Pobi1),
+	[8] = BIT(Pbi1) | BIT(Pbis),
+	[9] = BIT(Pbi1) | BIT(Pobi1),
+	[10] = BIT(Pbi1) | BIT(Pbis) | BIT(Pobi1) | BIT(Pobis),
+	[11] = BIT(Pob) | BIT(Pobi1) | BIT(Pobis),
+	[12] = BIT(Pbi1) | BIT(Pobi1) | BIT(Pobis),
+};
+
+static uchar *matcher[] = {
+	[Pbi1] = (uchar[]){
+		1,3,1,3,2,0
+	},
+	[Pbis] = (uchar[]){
+		5,1,8,5,27,1,5,1,2,5,13,3,1,1,3,3,3,2,0,1,
+		3,3,3,2,3,1,0,1,29
+	},
+	[Pob] = (uchar[]){
+		1,3,0,3,1,0
+	},
+	[Pobi1] = (uchar[]){
+		5,3,9,9,10,33,12,35,45,1,5,3,11,9,7,9,4,9,
+		17,1,3,0,3,1,3,2,0,3,1,1,3,0,34,1,37,1,5,2,
+		5,7,2,7,8,37,29,1,3,0,1,32
+	},
+	[Pobis] = (uchar[]){
+		5,2,10,7,11,19,49,1,1,3,3,3,2,1,3,0,3,1,0,
+		1,3,0,5,1,8,5,25,1,5,1,2,5,13,3,1,1,3,3,3,
+		2,0,1,3,3,3,2,26,1,51,1,5,1,6,5,9,1,3,0,51,
+		3,1,1,3,0,45
+	},
+	[Pois] = (uchar[]){
+		1,3,0,1,3,3,3,2,0
+	},
+};
+
+/* end of generated code */
+
 static void
-anumber(ANum *ai, Blk *b, Con *con)
+anumber(Num *tn, Blk *b, Con *con)
 {
-	/* This should be made obsolete by a proper
-	 * reassoc pass.
-	 *
-	 * Rules:
-	 *
-	 *   RTmp(_) -> 0    tmp
-	 *   ( RTmp(_) -> 1    slot )
-	 *   RCon(_) -> 2    con
-	 *   0 * 2   -> 3    s * i (when constant is 1,2,4,8)
-	 */
-	static char add[10][10] = {
-		[2] [4] = 4, [4] [2] = 4,
-		[2] [6] = 6, [6] [2] = 6,
-		[2] [7] = 7, [7] [2] = 7,
-		[0] [2] = 4, [2] [0] = 4, /* 4: o + b */
-		[0] [0] = 5,              /* 5: b + s * i */
-		[0] [3] = 5, [3] [0] = 5,
-		[2] [3] = 6, [3] [2] = 6, /* 6: o + s * i */
-		[2] [5] = 7, [5] [2] = 7, /* 7: o + b + s * i */
-		[0] [6] = 7, [6] [0] = 7,
-		[4] [3] = 7, [3] [4] = 7,
-	};
-	int a, a1, a2, n1, n2, t1, t2;
 	Ins *i;
+	Num *n;
 
 	for (i=b->ins; i<&b->ins[b->nins]; i++) {
-		if (rtype(i->to) == RTmp)
-			ai[i->to.val].i = i;
-		if (i->op != Oadd && i->op != Omul)
+		if (rtype(i->to) != RTmp)
 			continue;
-		a1 = aref(i->arg[0], ai);
-		a2 = aref(i->arg[1], ai);
-		t1 = a1 != 1 && a1 != 2;
-		t2 = a2 != 1 && a2 != 2;
-		if (i->op == Oadd) {
-			a = add[n1 = a1][n2 = a2];
-			if (t1 && a < add[0][a2])
-				a = add[n1 = 0][n2 = a2];
-			if (t2 && a < add[a1][0])
-				a = add[n1 = a1][n2 = 0];
-			if (t1 && t2 && a < add[0][0])
-				a = add[n1 = 0][n2 = 0];
-		} else {
-			n1 = n2 = a = 0;
-			if (ascale(i->arg[0], con) && t2)
-				a = 3, n1 = 2, n2 = 0;
-			if (t1 && ascale(i->arg[1], con))
-				a = 3, n1 = 0, n2 = 2;
-		}
-		ai[i->to.val].n = a;
-		ai[i->to.val].l = n1;
-		ai[i->to.val].r = n2;
+		n = &tn[i->to.val];
+		n->l = i->arg[0];
+		n->r = i->arg[1];
+		n->nl = refn(n->l, tn, con);
+		n->nr = refn(n->r, tn, con);
+		n->n = opn(i->op, n->nl, n->nr);
 	}
+}
+
+static Ref
+adisp(Con *c, Num *tn, Ref r, Fn *fn, int s)
+{
+	Ref v[2];
+	int n;
+
+	while (!req(r, R)) {
+		assert(rtype(r) == RTmp);
+		n = refn(r, tn, fn->con);
+		if (!(match[n] & BIT(Pob)))
+			break;
+		runmatch(matcher[Pob], tn, r, v);
+		assert(rtype(v[0]) == RCon);
+		addcon(c, &fn->con[v[0].val], s);
+		r = v[1];
+	}
+	return r;
 }
 
 static int
-amatch(Addr *a, Ref r, int n, ANum *ai, Fn *fn)
+amatch(Addr *a, Num *tn, Ref r, Fn *fn)
 {
-	Ins *i;
-	int nl, nr, t, s;
-	Ref al, ar;
+	static int pat[] = {Pobis, Pobi1, Pbis, Pois, Pbi1, -1};
+	Ref ro, rb, ri, rs, v[4];
+	Con *c, co;
+	int s, n, *p;
 
-	if (rtype(r) == RCon) {
-		if (!addcon(&a->offset, &fn->con[r.val]))
-			err("unlikely sum of $%s and $%s",
-				str(a->offset.sym.id),
-				str(fn->con[r.val].sym.id));
-		return 1;
-	}
-	assert(rtype(r) == RTmp);
-	i = ai[r.val].i;
-	nl = ai[r.val].l;
-	nr = ai[r.val].r;
-	if (i) {
-		if (nl > nr) {
-			al = i->arg[1];
-			ar = i->arg[0];
-			t = nl, nl = nr, nr = t;
-		} else {
-			al = i->arg[0];
-			ar = i->arg[1];
-		}
-	}
-	switch (n) {
-	case 3: /* s * i */
-		a->index = al;
-		a->scale = fn->con[ar.val].bits.i;
+	if (rtype(r) != RTmp)
 		return 0;
-	case 5: /* b + s * i */
-		switch (nr) {
-		case 0:
-			if (fn->tmp[ar.val].slot != -1) {
-				al = i->arg[1];
-				ar = i->arg[0];
-			}
-			a->index = ar;
-			a->scale = 1;
-			break;
-		case 3:
-			amatch(a, ar, nr, ai, fn);
+
+	n = refn(r, tn, fn->con);
+	memset(v, 0, sizeof v);
+	for (p=pat; *p>=0; p++)
+		if (match[n] & BIT(*p)) {
+			runmatch(matcher[*p], tn, r, v);
 			break;
 		}
-		r = al;
-		/* fall through */
-	case 0:
-		s = fn->tmp[r.val].slot;
-		if (s != -1)
-			r = SLOT(s);
-		a->base = r;
-		return n || s != -1;
-	case 2: /* constants */
-	case 4: /* o + b */
-	case 6: /* o + s * i */
-	case 7: /* o + b + s * i */
-		amatch(a, ar, nr, ai, fn);
-		amatch(a, al, nl, ai, fn);
-		return 1;
-	default:
-		die("unreachable");
+	if (*p < 0)
+		v[1] = r;
+
+	memset(&co, 0, sizeof co);
+	ro = v[0];
+	rb = adisp(&co, tn, v[1], fn, 1);
+	ri = v[2];
+	rs = v[3];
+	s = 1;
+
+	if (*p < 0 && co.type != CUndef)
+	if (amatch(a, tn, rb, fn))
+		return addcon(&a->offset, &co, 1);
+	if (!req(ro, R)) {
+		assert(rtype(ro) == RCon);
+		c = &fn->con[ro.val];
+		if (!addcon(&co, c, 1))
+			return 0;
 	}
+	if (!req(rs, R)) {
+		assert(rtype(rs) == RCon);
+		c = &fn->con[rs.val];
+		assert(c->type == CBits);
+		s = c->bits.i;
+	}
+	ri = adisp(&co, tn, ri, fn, s);
+	*a = (Addr){co, rb, ri, s};
+
+	if (rtype(ri) == RTmp)
+	if (fn->tmp[ri.val].slot != -1) {
+		if (a->scale != 1
+		|| fn->tmp[rb.val].slot != -1)
+			return 0;
+		a->base = ri;
+		a->index = rb;
+	}
+	if (!req(a->base, R)) {
+		assert(rtype(a->base) == RTmp);
+		s = fn->tmp[a->base.val].slot;
+		if (s != -1)
+			a->base = SLOT(s);
+	}
+	return 1;
 }
 
 /* instruction selection
@@ -704,7 +789,7 @@ amd64_isel(Fn *fn)
 	uint a;
 	int n, al;
 	int64_t sz;
-	ANum *ainfo;
+	Num *num;
 
 	/* assign slots to fast allocs */
 	b = fn->start;
@@ -723,12 +808,13 @@ amd64_isel(Fn *fn)
 					die("alloc too large");
 				fn->tmp[i->to.val].slot = fn->slot;
 				fn->slot += sz;
+				fn->salign = 2 + al - Oalloc;
 				*i = (Ins){.op = Onop};
 			}
 
 	/* process basic blocks */
 	n = fn->ntmp;
-	ainfo = emalloc(n * sizeof ainfo[0]);
+	num = emalloc(n * sizeof num[0]);
 	for (b=fn->start; b; b=b->link) {
 		curi = &insb[NIns];
 		for (sb=(Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
@@ -737,15 +823,14 @@ amd64_isel(Fn *fn)
 					assert(a+1 < p->narg);
 				fixarg(&p->arg[a], p->cls, 0, fn);
 			}
-		memset(ainfo, 0, n * sizeof ainfo[0]);
-		anumber(ainfo, b, fn->con);
+		memset(num, 0, n * sizeof num[0]);
+		anumber(num, b, fn->con);
 		seljmp(b, fn);
 		for (i=&b->ins[b->nins]; i!=b->ins;)
-			sel(*--i, ainfo, fn);
-		b->nins = &insb[NIns] - curi;
-		idup(&b->ins, curi, b->nins);
+			sel(*--i, num, fn);
+		idup(b, curi, &insb[NIns]-curi);
 	}
-	free(ainfo);
+	free(num);
 
 	if (debug['I']) {
 		fprintf(stderr, "\n> After instruction selection:\n");

@@ -90,7 +90,7 @@ isfloatv(Typ *t, char *cls)
 static void
 typclass(Class *c, Typ *t, int *gp, int *fp)
 {
-	uint64_t sz;
+	uint64_t sz, hfasz;
 	uint n;
 
 	sz = (t->size + 7) & -8;
@@ -103,7 +103,21 @@ typclass(Class *c, Typ *t, int *gp, int *fp)
 	if (t->align > 3)
 		err("alignments larger than 8 are not supported");
 
-	if (t->isdark || sz > 16 || sz == 0) {
+	c->size = sz;
+	c->hfa.base = Kx;
+	c->ishfa = isfloatv(t, &c->hfa.base);
+	hfasz = t->size/(KWIDE(c->hfa.base) ? 8 : 4);
+	c->ishfa &= !t->isdark && hfasz <= 4;
+	c->hfa.size = hfasz;
+
+	if (c->ishfa) {
+		for (n=0; n<hfasz; n++, c->nfp++) {
+			c->reg[n] = *fp++;
+			c->cls[n] = c->hfa.base;
+		}
+		c->nreg = n;
+	}
+	else if (t->isdark || sz > 16 || sz == 0) {
 		/* large structs are replaced by a
 		 * pointer to some caller-allocated
 		 * memory */
@@ -112,26 +126,14 @@ typclass(Class *c, Typ *t, int *gp, int *fp)
 		c->ngp = 1;
 		*c->reg = *gp;
 		*c->cls = Kl;
-		return;
 	}
-
-	c->size = sz;
-	c->hfa.base = Kx;
-	c->ishfa = isfloatv(t, &c->hfa.base);
-	c->hfa.size = t->size/(KWIDE(c->hfa.base) ? 8 : 4);
-
-	if (c->ishfa)
-		for (n=0; n<c->hfa.size; n++, c->nfp++) {
-			c->reg[n] = *fp++;
-			c->cls[n] = c->hfa.base;
-		}
-	else
+	else {
 		for (n=0; n<sz/8; n++, c->ngp++) {
 			c->reg[n] = *gp++;
 			c->cls[n] = Kl;
 		}
-
-	c->nreg = n;
+		c->nreg = n;
+	}
 }
 
 static void
@@ -543,8 +545,7 @@ split(Fn *fn, Blk *b)
 
 	++fn->nblk;
 	bn = newblk();
-	bn->nins = &insb[NIns] - curi;
-	idup(&bn->ins, curi, bn->nins);
+	idup(bn, curi, &insb[NIns]-curi);
 	curi = &insb[NIns];
 	bn->visit = ++b->visit;
 	strf(bn->name, "%s.%d", b->name, b->visit);
@@ -728,9 +729,9 @@ void
 arm64_abi(Fn *fn)
 {
 	Blk *b;
-	Ins *i, *i0, *ip;
+	Ins *i, *i0;
 	Insl *il;
-	int n;
+	int n0, n1, ioff;
 	Params p;
 
 	for (b=fn->start; b; b=b->link)
@@ -741,12 +742,13 @@ arm64_abi(Fn *fn)
 		if (!ispar(i->op))
 			break;
 	p = selpar(fn, b->ins, i);
-	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
-	i0 = alloc(n * sizeof(Ins));
-	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
-	ip = icpy(ip, i, &b->ins[b->nins] - i);
-	b->nins = n;
-	b->ins = i0;
+	n0 = &insb[NIns] - curi;
+	ioff = i - b->ins;
+	n1 = b->nins - ioff;
+	vgrow(&b->ins, n0+n1);
+	icpy(b->ins+n0, b->ins+ioff, n1);
+	icpy(b->ins, curi, n0);
+	b->nins = n0+n1;
 
 	/* lower calls, returns, and vararg instructions */
 	il = 0;
@@ -789,8 +791,7 @@ arm64_abi(Fn *fn)
 		if (b == fn->start)
 			for (; il; il=il->link)
 				emiti(il->i);
-		b->nins = &insb[NIns] - curi;
-		idup(&b->ins, curi, b->nins);
+		idup(b, curi, &insb[NIns]-curi);
 	} while (b != fn->start);
 
 	if (debug['A']) {
@@ -841,8 +842,7 @@ apple_extsb(Fn *fn)
 					emit(op, Kw, i->to, i->arg[0], R);
 				}
 		}
-		b->nins = &insb[NIns] - curi;
-		idup(&b->ins, curi, b->nins);
+		idup(b, curi, &insb[NIns]-curi);
 	}
 
 	if (debug['A']) {

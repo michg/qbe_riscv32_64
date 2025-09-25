@@ -5,7 +5,7 @@ PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
 
 COMMOBJ  = main.o util.o parse.o abi.o cfg.o mem.o ssa.o alias.o load.o \
-           copy.o fold.o simpl.o live.o spill.o rega.o emit.o
+           copy.o fold.o gvn.o gcm.o simpl.o live.o spill.o rega.o emit.o
 AMD64OBJ = amd64/targ.o amd64/sysv.o amd64/isel.o amd64/emit.o
 ARM64OBJ = arm64/targ.o arm64/abi.o arm64/isel.o arm64/emit.o
 RV64OBJ  = rv64/targ.o rv64/abi.o rv64/isel.o rv64/emit.o
@@ -13,6 +13,7 @@ OBJ      = $(COMMOBJ) $(AMD64OBJ) $(ARM64OBJ) $(RV64OBJ)
 
 SRCALL   = $(OBJ:.o=.c)
 
+CC       = cc
 CFLAGS   = -std=c99 -g -Wall -Wextra -Wpedantic
 
 qbe: $(OBJ)
@@ -41,7 +42,7 @@ config.h:
 		;;                                     \
 	*)                                             \
 		case `uname -m` in                     \
-		*aarch64*)                             \
+		*aarch64*|*arm64*)                     \
 			echo "#define Deftgt T_arm64"; \
 			;;                             \
 		*riscv64*)                             \
@@ -69,6 +70,9 @@ clean-gen: clean
 check: qbe
 	tools/test.sh all
 
+check-x86_64: qbe
+	TARGET=x86_64 tools/test.sh all
+
 check-arm64: qbe
 	TARGET=arm64 tools/test.sh all
 
@@ -88,4 +92,7 @@ src:
 		}" < $$F;                          \
 	done
 
-.PHONY: clean clean-gen check check-arm64 src 80 install uninstall
+wc:
+	@wc -l $(SRCALL)
+
+.PHONY: clean clean-gen check check-arm64 check-rv64 src 80 wc install uninstall
